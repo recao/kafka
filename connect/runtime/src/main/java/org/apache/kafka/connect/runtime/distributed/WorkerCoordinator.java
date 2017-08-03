@@ -206,6 +206,11 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
         return maxOffset;
     }
 
+    private Map<String, ByteBuffer> performControlledTaskAssignment(String leaderId, long maxOffset, Map<String, ConnectProtocol.WorkerState> memberConfigs) {
+        // this is a new task assignment strategy for Siphon
+        return null;
+    }
+
     private Map<String, ByteBuffer> performTaskAssignment(String leaderId, long maxOffset, Map<String, ConnectProtocol.WorkerState> memberConfigs) {
         Map<String, List<String>> connectorAssignments = new HashMap<>();
         Map<String, List<ConnectorTaskId>> taskAssignments = new HashMap<>();
