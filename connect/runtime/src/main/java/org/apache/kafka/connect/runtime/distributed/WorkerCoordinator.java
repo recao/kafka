@@ -165,7 +165,7 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
             return fillAssignmentsAndSerialize(memberConfigs.keySet(), ConnectProtocol.Assignment.CONFIG_MISMATCH,
                     leaderId, memberConfigs.get(leaderId).url(), maxOffset,
                     new HashMap<String, List<String>>(), new HashMap<String, List<ConnectorTaskId>>());
-        return performControlledTaskAssignment(leaderId, leaderOffset, memberConfigs);
+        return performTaskAssignment(leaderId, leaderOffset, memberConfigs);
     }
 
     private long findMaxMemberConfigOffset(Map<String, ConnectProtocol.WorkerState> memberConfigs) {
