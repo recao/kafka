@@ -165,7 +165,7 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
             return fillAssignmentsAndSerialize(memberConfigs.keySet(), ConnectProtocol.Assignment.CONFIG_MISMATCH,
                     leaderId, memberConfigs.get(leaderId).url(), maxOffset,
                     new HashMap<String, List<String>>(), new HashMap<String, List<ConnectorTaskId>>());
-        return performTaskAssignment(leaderId, leaderOffset, memberConfigs);
+        return performControlledTaskAssignment(leaderId, leaderOffset, memberConfigs);
     }
 
     private long findMaxMemberConfigOffset(Map<String, ConnectProtocol.WorkerState> memberConfigs) {
@@ -224,76 +224,23 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
             memberConnectors.add(connectorId);
         }
 
-        // for testing purpose, we set up 3 workers, and create 5 connectors:
-        // con1: 1 task
-        // con2: 10 tasks
-        // con3: 2 tasks
-        // con4: 10 tasks
-        // after this assignment finished, 5 workers should be running following tasks:
-        // worker1: con1 1
-        // worker2: con2 10
-        // worker3: con3 2
-        // worker4: con4 5
-        // worker5: con4 5
+        // assign all tasks to worker1, until tasks reaches 10, then assign to worker2
+        String worker1 = memberIt.next();
+        String worker2 = memberIt.next();
+        List<ConnectorTaskId> w1Tasks = new ArrayList<>();
+        taskAssignments.put(worker1, w1Tasks);
+        List<ConnectorTaskId> w2Tasks = new ArrayList<>();
+        taskAssignments.put(worker2, w2Tasks);
 
-        // assign con1 to worker1
-        String taskAssignedTo = memberIt.next();
-        for (ConnectorTaskId taskId : sorted(configSnapshot.tasks("con1"))) {
-            log.trace("Assigning task {} to {}", taskId, taskAssignedTo);
-            List<ConnectorTaskId> memberTasks = taskAssignments.get(taskAssignedTo);
-            if (memberTasks == null) {
-                memberTasks = new ArrayList<>();
-                taskAssignments.put(taskAssignedTo, memberTasks);
+        for (String connectorId : connectorsSorted) {
+            for (ConnectorTaskId taskId : sorted(configSnapshot.tasks(connectorId))) {
+                if(w1Tasks.size() < 10) w1Tasks.add(taskId);
+                else w2Tasks.add(taskId);
             }
-            memberTasks.add(taskId);
         }
-        // assign con2 to worker2
-        taskAssignedTo = memberIt.next();
-        for (ConnectorTaskId taskId : sorted(configSnapshot.tasks("con2"))) {
-            log.trace("Assigning task {} to {}", taskId, taskAssignedTo);
-            List<ConnectorTaskId> memberTasks = taskAssignments.get(taskAssignedTo);
-            if (memberTasks == null) {
-                memberTasks = new ArrayList<>();
-                taskAssignments.put(taskAssignedTo, memberTasks);
-            }
-            memberTasks.add(taskId);
-        }
-        // assign con3 to worker3
-        taskAssignedTo = memberIt.next();
-        for (ConnectorTaskId taskId : sorted(configSnapshot.tasks("con3"))) {
-            log.trace("Assigning task {} to {}", taskId, taskAssignedTo);
-            List<ConnectorTaskId> memberTasks = taskAssignments.get(taskAssignedTo);
-            if (memberTasks == null) {
-                memberTasks = new ArrayList<>();
-                taskAssignments.put(taskAssignedTo, memberTasks);
-            }
-            memberTasks.add(taskId);
-        }
-        // assign con4 to worker4 & worker5
-        String w4 = memberIt.next();
-        String w5 = memberIt.next();
-        int i = 1;
-        for (ConnectorTaskId taskId : sorted(configSnapshot.tasks("con4"))) {
-            if (i <= 5) {
-                log.trace("Assigning task {} to {}", taskId, w4);
-                List<ConnectorTaskId> memberTasks = taskAssignments.get(w4);
-                if (memberTasks == null) {
-                    memberTasks = new ArrayList<>();
-                    taskAssignments.put(w4, memberTasks);
-                }
-                memberTasks.add(taskId);
-            }
-            else {
-                log.trace("Assigning task {} to {}", taskId, w5);
-                List<ConnectorTaskId> memberTasks = taskAssignments.get(w5);
-                if (memberTasks == null) {
-                    memberTasks = new ArrayList<>();
-                    taskAssignments.put(w5, memberTasks);
-                }
-                memberTasks.add(taskId);
-            }
-            i++;
-        }
+
+        log.info("worker1 assigned task number: " + w1Tasks.size());
+        log.info("worker2 assigned task number: " + w2Tasks.size());
 
         this.leaderState = new LeaderState(memberConfigs, connectorAssignments, taskAssignments);
 
