@@ -9,6 +9,7 @@ import java.util.Map;
 
 public class SiphonSinkTask extends SinkTask {
     public SiphonSinkTask() {
+        // do nothing
     }
 
     @Override

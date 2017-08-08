@@ -206,6 +206,23 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
         return maxOffset;
     }
 
+    private boolean assignTaskToWorker(String worker, ConnectorTaskId taskId, Map<String, List<ConnectorTaskId>> taskAssignments, int MAX_TASKS_PER_WORKER) {
+        List<ConnectorTaskId> memberTasks = taskAssignments.get(worker);
+        if (memberTasks == null) {
+            memberTasks = new ArrayList<>();
+            taskAssignments.put(worker, memberTasks);
+        }
+        // if current worker is not full, then assign the task and return true
+        if (memberTasks.size() < MAX_TASKS_PER_WORKER) {
+            memberTasks.add(taskId);
+            return true;
+        }
+        // if current worker is full, return false
+        else {
+             return false;
+        }
+    }
+
     private Map<String, ByteBuffer> performControlledTaskAssignment(String leaderId, long maxOffset, Map<String, ConnectProtocol.WorkerState> memberConfigs) {
         // this is a new task assignment strategy for Siphon
         Map<String, List<String>> connectorAssignments = new HashMap<>();
@@ -224,23 +241,25 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
             memberConnectors.add(connectorId);
         }
 
-        // assign all tasks to worker1, until tasks reaches 10, then assign to worker2
-        String worker1 = memberIt.next();
-        String worker2 = memberIt.next();
-        List<ConnectorTaskId> w1Tasks = new ArrayList<>();
-        taskAssignments.put(worker1, w1Tasks);
-        List<ConnectorTaskId> w2Tasks = new ArrayList<>();
-        taskAssignments.put(worker2, w2Tasks);
-
+        final int MAX_TASKS_PER_WORKER = 200;
+        String currentWorker = memberIt.next();
+        // iterate every task running on this cluster
+        task_loop:
         for (String connectorId : connectorsSorted) {
             for (ConnectorTaskId taskId : sorted(configSnapshot.tasks(connectorId))) {
-                if(w1Tasks.size() < 10) w1Tasks.add(taskId);
-                else w2Tasks.add(taskId);
+                if(assignTaskToWorker(currentWorker, taskId, taskAssignments, MAX_TASKS_PER_WORKER)) {
+                    continue;
+                }
+                // if current worker is full, move to next worker
+                else {
+                    currentWorker = memberIt.next();
+                    // if next worker is also full, then all the workers are full, don't assign rest tasks
+                    if(!assignTaskToWorker(currentWorker, taskId, taskAssignments, MAX_TASKS_PER_WORKER)) {
+                        break task_loop;
+                    }
+                }
             }
         }
-
-        log.info("worker1 assigned task number: " + w1Tasks.size());
-        log.info("worker2 assigned task number: " + w2Tasks.size());
 
         this.leaderState = new LeaderState(memberConfigs, connectorAssignments, taskAssignments);
 
