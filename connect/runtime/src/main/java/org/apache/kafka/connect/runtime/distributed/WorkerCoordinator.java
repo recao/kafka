@@ -241,7 +241,7 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
             memberConnectors.add(connectorId);
         }
 
-        final int MAX_TASKS_PER_WORKER = 200;
+        final int MAX_TASKS_PER_WORKER = 500;
         String currentWorker = memberIt.next();
         // iterate every task running on this cluster
         task_loop:
