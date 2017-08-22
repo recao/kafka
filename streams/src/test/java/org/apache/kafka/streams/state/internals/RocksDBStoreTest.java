@@ -25,10 +25,10 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.ProcessorStateException;
 import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
 import org.apache.kafka.streams.processor.internals.RecordCollector;
+import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.RocksDBConfigSetter;
 import org.apache.kafka.test.MockProcessorContext;
 import org.apache.kafka.test.NoOpRecordCollector;
-import org.apache.kafka.test.TestCondition;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -37,14 +37,18 @@ import org.rocksdb.Options;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Set;
 
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -69,6 +73,27 @@ public class RocksDBStoreTest {
     @After
     public void tearDown() throws Exception {
         subject.close();
+    }
+
+    @Test
+    public void shouldNotThrowExceptionOnRestoreWhenThereIsPreExistingRocksDbFiles() throws Exception {
+        subject.init(context, subject);
+
+        final String message = "how can a 4 ounce bird carry a 2lb coconut";
+        int intKey = 1;
+        for (int i = 0; i < 2000000; i++) {
+            subject.put("theKeyIs" + intKey++, message);
+        }
+
+        final List<KeyValue<byte[], byte[]>> restoreBytes = new ArrayList<>();
+
+        final byte[] restoredKey = "restoredKey".getBytes("UTF-8");
+        final byte[] restoredValue = "restoredValue".getBytes("UTF-8");
+        restoreBytes.add(KeyValue.pair(restoredKey, restoredValue));
+
+        context.restore("test", restoreBytes);
+
+        assertThat(subject.get("restoredKey"), equalTo("restoredValue"));
     }
 
     @Test
@@ -123,33 +148,122 @@ public class RocksDBStoreTest {
     }
 
     @Test
-    public void shouldTogglePrepareForBulkLoadDuringRestoreCalls() throws Exception {
+    public void shouldTogglePrepareForBulkloadSetting() {
+        subject.init(context, subject);
+        RocksDBStore.RocksDBBatchingRestoreCallback restoreListener =
+            (RocksDBStore.RocksDBBatchingRestoreCallback) subject.batchingStateRestoreCallback;
+
+        restoreListener.onRestoreStart(null, null, 0, 0);
+        assertTrue("Should have set bulk loading to true", subject.isPrepareForBulkload());
+
+        restoreListener.onRestoreEnd(null, null, 0);
+        assertFalse("Should have set bulk loading to false", subject.isPrepareForBulkload());
+    }
+
+    @Test
+    public void shouldTogglePrepareForBulkloadSettingWhenPrexistingSstFiles() throws Exception {
+        final List<KeyValue<byte[], byte[]>> entries = getKeyValueEntries();
+
+        subject.init(context, subject);
+        context.restore(subject.name(), entries);
+
+        RocksDBStore.RocksDBBatchingRestoreCallback restoreListener =
+            (RocksDBStore.RocksDBBatchingRestoreCallback) subject.batchingStateRestoreCallback;
+
+        restoreListener.onRestoreStart(null, null, 0, 0);
+        assertTrue("Should have not set bulk loading to true", subject.isPrepareForBulkload());
+
+        restoreListener.onRestoreEnd(null, null, 0);
+        assertFalse("Should have set bulk loading to false", subject.isPrepareForBulkload());
+    }
+
+    @Test
+    public void shouldRestoreAll() throws Exception {
+        final List<KeyValue<byte[], byte[]>> entries = getKeyValueEntries();
+
+        subject.init(context, subject);
+        context.restore(subject.name(), entries);
+
+        assertEquals(subject.get("1"), "a");
+        assertEquals(subject.get("2"), "b");
+        assertEquals(subject.get("3"), "c");
+    }
+
+
+    @Test
+    public void shouldHandleDeletesOnRestoreAll() throws Exception {
+        final List<KeyValue<byte[], byte[]>> entries = getKeyValueEntries();
+        entries.add(new KeyValue<>("1".getBytes("UTF-8"), (byte[]) null));
+
+        subject.init(context, subject);
+        context.restore(subject.name(), entries);
+
+        final KeyValueIterator<String, String> iterator = subject.all();
+        final Set<String> keys = new HashSet<>();
+
+        while (iterator.hasNext()) {
+            keys.add(iterator.next().key);
+        }
+
+        assertThat(keys, equalTo(Utils.mkSet("2", "3")));
+    }
+
+    @Test
+    public void shouldHandleDeletesAndPutbackOnRestoreAll() throws Exception {
         final List<KeyValue<byte[], byte[]>> entries = new ArrayList<>();
         entries.add(new KeyValue<>("1".getBytes("UTF-8"), "a".getBytes("UTF-8")));
         entries.add(new KeyValue<>("2".getBytes("UTF-8"), "b".getBytes("UTF-8")));
+        // this will be deleted
+        entries.add(new KeyValue<>("1".getBytes("UTF-8"), (byte[]) null));
         entries.add(new KeyValue<>("3".getBytes("UTF-8"), "c".getBytes("UTF-8")));
-
-        final AtomicReference<Exception> conditionNotMet = new AtomicReference<>();
-        final AtomicInteger conditionCheckCount = new AtomicInteger();
-
-        Thread conditionCheckThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                assertRocksDBTurnsOnBulkLoading(conditionCheckCount, conditionNotMet);
-
-                assertRockDBTurnsOffBulkLoad(conditionCheckCount, conditionNotMet);
-            }
-        });
+        // this will restore key "1" as WriteBatch applies updates in order
+        entries.add(new KeyValue<>("1".getBytes("UTF-8"), "restored".getBytes("UTF-8")));
 
         subject.init(context, subject);
-
-        conditionCheckThread.start();
         context.restore(subject.name(), entries);
 
-        conditionCheckThread.join(2000);
+        final KeyValueIterator<String, String> iterator = subject.all();
+        final Set<String> keys = new HashSet<>();
 
-        assertTrue(conditionNotMet.get() == null);
-        assertTrue(conditionCheckCount.get() == 2);
+        while (iterator.hasNext()) {
+            keys.add(iterator.next().key);
+        }
+
+        assertThat(keys, equalTo(Utils.mkSet("1", "2", "3")));
+
+        assertEquals(subject.get("1"), "restored");
+        assertEquals(subject.get("2"), "b");
+        assertEquals(subject.get("3"), "c");
+    }
+
+    @Test
+    public void shouldRestoreThenDeleteOnRestoreAll() throws Exception {
+        final List<KeyValue<byte[], byte[]>> entries = getKeyValueEntries();
+
+        subject.init(context, subject);
+        
+        context.restore(subject.name(), entries);
+
+        assertEquals(subject.get("1"), "a");
+        assertEquals(subject.get("2"), "b");
+        assertEquals(subject.get("3"), "c");
+
+        entries.clear();
+
+        entries.add(new KeyValue<>("2".getBytes("UTF-8"), "b".getBytes("UTF-8")));
+        entries.add(new KeyValue<>("3".getBytes("UTF-8"), "c".getBytes("UTF-8")));
+        entries.add(new KeyValue<>("1".getBytes("UTF-8"), (byte[]) null));
+
+        context.restore(subject.name(), entries);
+
+        final KeyValueIterator<String, String> iterator = subject.all();
+        final Set<String> keys = new HashSet<>();
+
+        while (iterator.hasNext()) {
+            keys.add(iterator.next().key);
+        }
+
+        assertThat(keys, equalTo(Utils.mkSet("2", "3")));
     }
 
 
@@ -207,36 +321,6 @@ public class RocksDBStoreTest {
         subject.flush();
     }
 
-    private void assertRockDBTurnsOffBulkLoad(AtomicInteger conditionCount,
-                                              AtomicReference<Exception> conditionNotMet) {
-        try {
-            TestUtils.waitForCondition(new TestCondition() {
-                @Override
-                public boolean conditionMet() {
-                    return !subject.isPrepareForBulkload();
-                }
-            }, 1000L, "Did not revert bulk load setting");
-            conditionCount.getAndIncrement();
-        } catch (Exception e) {
-            conditionNotMet.set(e);
-        }
-    }
-
-    private void assertRocksDBTurnsOnBulkLoading(AtomicInteger conditionCount,
-                                                 AtomicReference<Exception> conditionNotMet) {
-        try {
-            TestUtils.waitForCondition(new TestCondition() {
-                @Override
-                public boolean conditionMet() {
-                    return subject.isPrepareForBulkload();
-                }
-            }, 1000L, "Did not prepare for bulk load");
-            conditionCount.getAndIncrement();
-        } catch (Exception e) {
-            conditionNotMet.set(e);
-        }
-    }
-
     public static class MockRocksDbConfigSetter implements RocksDBConfigSetter {
         static boolean called;
 
@@ -246,6 +330,13 @@ public class RocksDBStoreTest {
         }
     }
 
+    private List<KeyValue<byte[], byte[]>> getKeyValueEntries() throws UnsupportedEncodingException {
+        final List<KeyValue<byte[], byte[]>> entries = new ArrayList<>();
+        entries.add(new KeyValue<>("1".getBytes("UTF-8"), "a".getBytes("UTF-8")));
+        entries.add(new KeyValue<>("2".getBytes("UTF-8"), "b".getBytes("UTF-8")));
+        entries.add(new KeyValue<>("3".getBytes("UTF-8"), "c".getBytes("UTF-8")));
+        return entries;
+    }
 
     private static class ConfigurableProcessorContext extends MockProcessorContext {
         final Map<String, Object> configs;
